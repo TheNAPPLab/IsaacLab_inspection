@@ -34,7 +34,7 @@ from skrl.agents.torch.ppo import PPO_RNN as PPO, PPO_DEFAULT_CONFIG
 from skrl.envs.loaders.torch import load_isaaclab_env
 from skrl.envs.wrappers.torch import wrap_env
 from skrl.memories.torch import RandomMemory
-from skrl.models.torch import DeterministicMixin, CategoricalMixin, Model
+from skrl.models.torch import DeterministicMixin, CategoricalMixin, Model, GaussianMixin
 from skrl.resources.preprocessors.torch import RunningStandardScaler
 from skrl.resources.schedulers.torch import KLAdaptiveRL
 from skrl.trainers.torch import SequentialTrainer
@@ -51,21 +51,24 @@ sys.argv.append("--enable_cameras")
 
 set_seed(42)
 
-class Shared(CategoricalMixin, DeterministicMixin, Model):
+class Shared(GaussianMixin, DeterministicMixin, Model):
     def __init__(self,
                 observation_space,
                 action_space,
                 device,
                 clip_actions=False,
-                unnormalized_log_prob=True,
+                clip_log_std=True, min_log_std=-20, max_log_std=2,
                 num_envs=1,
-                sequence_length=128, _hidden_size=128):
+                sequence_length=128,
+                _hidden_size=128,
+                _hidden_size_gru=256):
         Model.__init__(self, observation_space, action_space, device)
-        CategoricalMixin.__init__(self, unnormalized_log_prob)
+        GaussianMixin.__init__(self, clip_actions, clip_log_std, min_log_std, max_log_std)
         DeterministicMixin.__init__(self, clip_actions)
         self.num_envs = num_envs
         self.sequence_length = sequence_length
         self._hidden_size = _hidden_size
+        self._hidden_size_gru = _hidden_size_gru
 
         camera_space = observation_space.spaces["cameras"]
         robot_pose_space = observation_space.spaces["robot-pose"]
@@ -84,15 +87,24 @@ class Shared(CategoricalMixin, DeterministicMixin, Model):
         # print(f"DEBUG: camera_flat_size: {self.camera_flat_size}")
         # print(f"DEBUG: total_obs_size: {self.total_obs_size}")
 
+        # self.camera_features_extractor = nn.Sequential(
+        #     nn.Conv2d(in_channels=self.camera_shape[-1], out_channels=32,
+        #             kernel_size=8, stride=4, padding=0),
+        #     nn.ELU(),
+        #     nn.Conv2d(in_channels=32, out_channels=64, 
+        #              kernel_size=4, stride=2, padding=0),
+        #     nn.ELU(),
+        #     nn.Conv2d(in_channels=64, out_channels=64, 
+        #              kernel_size=3, stride=1, padding=0),
+        #     nn.ELU(),
+        #     nn.Flatten()
+        # )
         self.camera_features_extractor = nn.Sequential(
-            nn.Conv2d(in_channels=self.camera_shape[-1], out_channels=32,
-                    kernel_size=8, stride=4, padding=0),
+            nn.Conv2d(in_channels=self.camera_shape[-1], out_channels=64, kernel_size=8, stride=4),
             nn.ELU(),
-            nn.Conv2d(in_channels=32, out_channels=64, 
-                     kernel_size=4, stride=2, padding=0),
+            nn.Conv2d(in_channels=64, out_channels=128, kernel_size=4, stride=2),
             nn.ELU(),
-            nn.Conv2d(in_channels=64, out_channels=64, 
-                     kernel_size=3, stride=1, padding=0),
+            nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3, stride=1),
             nn.ELU(),
             nn.Flatten()
         )
@@ -105,15 +117,6 @@ class Shared(CategoricalMixin, DeterministicMixin, Model):
             nn.ELU(),
             nn.Flatten()
         )
-        # self.map_features_extractor = nn.Sequential(
-        #     nn.Conv2d(in_channels=self.map_shape[-1], out_channels=8, kernel_size=8, stride=4), # 16 -> 8
-        #     nn.ELU(),
-        #     nn.Conv2d(in_channels=8, out_channels=16, kernel_size=4, stride=2), # 32 -> 16
-        #     nn.ELU(),
-        #     nn.Conv2d(in_channels=16, out_channels=16, kernel_size=3, stride=1), # 32 -> 16
-        #     nn.ELU(),
-        #     nn.Flatten()
-        # )
 
         with torch.no_grad():
             #permute(STATES, (0, 3, 1, 2)) 
@@ -126,7 +129,7 @@ class Shared(CategoricalMixin, DeterministicMixin, Model):
 
 
         self.gru_input_size = camera_cnn_output_dim + self.robot_pose_dim + map_cnn_output_dim
-        self.gru_hidden_size = self._hidden_size #H output size of GRU
+        self.gru_hidden_size = self._hidden_size_gru #H output size of GRU
         self.gru_num_layers = 1
         # print(f"DEBUG: gru_input_size: {self.gru_input_size}")
 
@@ -136,17 +139,18 @@ class Shared(CategoricalMixin, DeterministicMixin, Model):
                           batch_first=True)  # batch_first -> (batch, sequence, features)
         #output heads
         self.policy_head = nn.Sequential(
-            nn.Linear(self.gru_hidden_size, self._hidden_size),
+            nn.Linear(self.gru_hidden_size, self.gru_hidden_size),
             nn.ELU(),
-            nn.Linear(self._hidden_size, self.num_actions)
+            nn.Linear(self.gru_hidden_size, self.num_actions)
         )
 
         self.value_head = nn.Sequential(
-            nn.Linear(self.gru_hidden_size, self._hidden_size),
+            nn.Linear(self.gru_hidden_size, self.gru_hidden_size),
             nn.ELU(),
-            nn.Linear(self._hidden_size, 1)
+            nn.Linear(self.gru_hidden_size, 1)
         )
         # Action Head, MU and STD
+        self.log_std_parameter = nn.Parameter(torch.zeros(self.num_actions))
     def get_specification(self) -> dict:
         return {
                 "rnn": {
@@ -200,7 +204,7 @@ class Shared(CategoricalMixin, DeterministicMixin, Model):
 
     def act(self, inputs, role):
         if role == "policy":
-            act = CategoricalMixin.act(self, inputs, role)
+            act = GaussianMixin.act(self, inputs, role)
             # print(f"DEBUG: Action shape: {act.shape}")
             return act
         elif role == "value":
@@ -252,11 +256,13 @@ class Shared(CategoricalMixin, DeterministicMixin, Model):
         rnn_output = torch.flatten(rnn_output, start_dim=0, end_dim=1)
 
         if role == "policy":
-            action_logits = self.policy_head(rnn_output)
-            if torch.isnan(action_logits).any() or torch.isinf(action_logits).any():
-                print("!!! ERROR: NaN or Inf detected in action_logits from compute() !!!")
-                print(action_logits)
-            return  action_logits, {"rnn": [hidden_states]}
+            mean_actions = self.policy_head(rnn_output)
+            
+
+            # if torch.isnan(mean_actions).any() or torch.isinf(mean_actions).any():
+            #     print("!!! ERROR: NaN or Inf detected in mean_actions from compute() !!!")
+            #     print(mean_actions)
+            return mean_actions, self.log_std_parameter, {"rnn": [hidden_states]}
         elif role == "value":
             value_estimate = self.value_head(rnn_output)
             return value_estimate, {"rnn": [hidden_states]}
@@ -289,7 +295,7 @@ cfg["learning_epochs"] = 8
 cfg["mini_batches"] = 4  #
 cfg["discount_factor"] = 0.99
 cfg["lambda"] = 0.95
-cfg["learning_rate"] = 3e-3 #
+cfg["learning_rate"] = 1e-3 #
 cfg["learning_rate_scheduler"] = KLAdaptiveRL
 cfg["learning_rate_scheduler_kwargs"] = {"kl_threshold": 0.008}
 cfg["random_timesteps"] = 0
@@ -298,7 +304,7 @@ cfg["grad_norm_clip"] = 1.0
 cfg["ratio_clip"] = 0.2
 cfg["value_clip"] = 0.2
 cfg["clip_predicted_values"] = True
-cfg["entropy_loss_scale"] = 0.05
+cfg["entropy_loss_scale"] = 0.01
 cfg["value_loss_scale"] = 1.0
 cfg["kl_threshold"] = 0.0
 # cfg["rewards_shaper"] = lambda rewards, *args, **kwargs: rewards * 1.0

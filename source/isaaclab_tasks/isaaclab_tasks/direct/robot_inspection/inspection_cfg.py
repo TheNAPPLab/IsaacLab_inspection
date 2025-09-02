@@ -86,13 +86,14 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
     episode_length_s = 42
     action_scale = 1.0  # [N]
     #action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
-    action_space = spaces.Discrete(3)
+    # action_space = spaces.Discrete(3)
+    action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
     #behind the shelves
-    viewer = ViewerCfg( eye=(-24, 29, 8.4), lookat=(-13, 27.6, 0.0))
+    # viewer = ViewerCfg( eye=(-24, 29, 8.4), lookat=(-13, 27.6, 0.0))
     # next to the Goal
     # viewer = ViewerCfg( eye=(-24, 5, 8.4), lookat=(0, 0, 0.0))
     # next to the Goal CLOSER
-    # viewer = ViewerCfg( eye=(-10, 5, 8.4), lookat=(0, 0, 0.0))
+    viewer = ViewerCfg( eye=(-10, 5, 8.4), lookat=(0, 0, 0.0))
     
     # outside wall
     # viewer = ViewerCfg( eye=(-30, 5, 8.4), lookat=(0, 0, 0.0))
@@ -112,7 +113,7 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
         ))
 
     # robot
-    wheel_seperation = 0.4 # 0.37558
+    wheel_seperation = 	0.37558 # 0.37558
     wheel_radius = 0.098
     forward_vel = 5.5
     turn_vel = 5.0
@@ -139,7 +140,7 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
         update_period=0.1,
         height=_height,
         width=_width,
-        data_types=["distance_to_image_plane"],
+        data_types=["rgb", "distance_to_image_plane"],
         spawn=sim_utils.PinholeCameraCfg(
             focal_length=24.0,
             focus_distance=400.0,
@@ -206,7 +207,7 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
 
     observation_space = spaces.Dict({
         "robot-pose": spaces.Box(low=float("-inf"), high=float("inf"), shape=(13,)),
-        "cameras": spaces.Box(low=float("-inf"), high=float("inf"), shape=(_height, _height, 4)),
+        "cameras": spaces.Box(low=float("-inf"), high=float("inf"), shape=(_height, _height, 6)),
         'local_map': spaces.Box(low=0.0, high=1.0, shape=(LOCAL_MAP_SIZE, LOCAL_MAP_SIZE, 2))
     })
 
@@ -225,29 +226,29 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
 
     #reward
 
-    mesh_coverage_reward_scale = 1e-3 # Scale for inspection coverage reward
-    ent_IG_reward_scale = 5e-4  # Scale for information gain reward via entropy reduction
-    visibility_IG_reward_scale = 1e-3  # Scale for visibility information gain reward
+    mesh_coverage_reward_scale = 2e-3 # Scale for inspection coverage reward
+    ent_IG_reward_scale = 7.5e-4  # Scale for information gain reward via entropy reduction
+    visibility_IG_reward_scale = 1.5e-3  # Scale for visibility information gain reward
     distance_reward_scale = 1.0  # Scale for distance-based rewards
     distance_reward_scale_beta = 2.0  # Beta parameter for distance-based rewards
     max_reward_distance = 3.0 #max distance for reward
-    time_penalty = -0.001
+    time_penalty = -0.01
     spin_penalty_scale = 0.05
     movement_reward_scale = 0.05
 
     #inspectiopn curriculum
-    init_inspection_threshold = 0.1  # Coverage % threshold to count as valid inspection
-    max_inspection_threshold = 0.99
+    init_inspection_threshold = 0.5 # Coverage % threshold to count as valid inspection
+    max_inspection_threshold = 0.98
     curriculum_difficulty_increment = 0.05
-    coverage_reward = 10.0
+    coverage_reward = 7.0
     # inspection_save_dir = "inspection_captures"
 
     terminate_on_all_inspected = True
-    min_episode_length = 2400
+    min_episode_length = 2000
     max_faces_to_inspect = env_parameters["num_faces"]
 
-    max_linear_velocity = 0.1
-    max_angular_velocity = 0.1
+    max_linear_velocity = 1.0
+    max_angular_velocity = 1.0
     min_discovery_interval = 1.0
     max_wheel_velocity = 10.0  # Max wheel velocity for the robot
 

@@ -71,12 +71,12 @@ def main():
             move_steps = 500
             current_step = 0
             def move_forward():
-                return torch.tensor([[MOVE_ACTION]], device=env.unwrapped.device)
+                return torch.tensor([[1, 0]], device=env.unwrapped.device)
             def turn_left():
-                return torch.tensor([[2]], device=env.unwrapped.device)
+                return torch.tensor([[0, 1]], device=env.unwrapped.device)
             def turn_right():
-                return torch.tensor([[1]], device=env.unwrapped.device)
-            
+                return torch.tensor([[0, -1]], device=env.unwrapped.device)
+
             for i in range(3000):
             
                 if i < 300:

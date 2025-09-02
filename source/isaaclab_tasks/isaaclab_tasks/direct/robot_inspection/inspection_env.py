@@ -48,9 +48,108 @@ import omni.usd
 from pxr import UsdGeom, Gf
 #View logs
 
+DEG_90 = [0.7071068, 0.0, 0.0, 0.7071068]
+DEG_NEG_90 = [0.7071068, 0.0, 0.0, -0.7071068]
 debug = False
 use_wandb = not debug
 
+class Curriculum:
+    def __init__(self,
+                 init_inspection_threshold = 0.5,
+                 max_inspection_threshold = 0.9,
+                 curriculum_difficulty_increment = 0.05,
+                 default_spatial_milestone: float = 0.8,
+                 final_spatial_milestone: float = 0.9,
+                device: str = None):
+        self.current_level = 0
+        self.init_inspection_threshold = init_inspection_threshold
+        self.max_inspection_threshold = max_inspection_threshold
+        self.curriculum_difficulty_increment = curriculum_difficulty_increment
+        self.device = device
+        
+        
+     #  new_pos = torch.zeros((num_resets, 3), device=self.device)
+
+        self.init_z = 0.01
+        self.start_pos = [[0.0, 5.0, self.init_z, DEG_90],
+                     [4.0, 5.5, self.init_z, DEG_NEG_90],
+                    [0, 0, self.init_z, DEG_90],
+                    [2.2, 9.4, self.init_z, DEG_0],
+                    [2.2, 12.7, self.init_z, DEG_NEG_90],
+                    [-1.19, 0.18, self.init_z, DEG_90],
+                    [-2.41, 7.47, self.init_z, DEG_0],
+                    [-6.93, 4.59, self.init_z, DEG_0],
+                    [-10.41, 7.47, self.init_z, DEG_NEG_90],
+                    [-20.466, 4.53, self.init_z, DEG_90],
+                    [-22, 7.78, self.init_z, DEG_NEG_90],
+                    [-24.2, 11.41, self.init_z, DEG_NEG_90]]
+        self.episode_length_schedule = [
+            2000, 2000,  # Levels 0, 1
+            2000, 2000, # Levels 2, 3
+            2000, 2200, # Levels 4, 5
+            2200, 2200, # Levels 6, 7
+            2200, 2400, # Levels 8, 9
+            2400, 2400  # Levels 10, 11 (full length)
+        ]
+        
+        positions = torch.tensor([[item[0], item[1], item[2]] for item in self.start_pos], device=device)
+        orientations = torch.tensor([item[3] for item in self.start_pos], device=device)
+        self.start_positions_tensor = positions
+        self.start_orientations_tensor = orientations
+        self.default_spatial_milestone = default_spatial_milestone
+        self.final_spatial_milestone = final_spatial_milestone
+        self.initialise_task_curriculum()
+    #Task curriculum
+    def initialise_task_curriculum(self):
+        # Two levels of curriculum
+        # Task difficulty
+        # Spatial curriculum
+        self.inspection_curriculum_level = self.init_inspection_threshold
+        self.success_buffer = deque(maxlen= 100)
+        self.curriculum_threshold = 0.75  # steps
+        self.min_episodes_for_curriculum = 90
+        self.success_rate = 0.0
+        self.spatial_level = 1
+
+    def get_inspection_level(self):
+        return self.inspection_curriculum_level
+
+    def get_current_episode_length(self):
+        """Returns the max episode length for the current spatial level."""
+        # Ensure we don't go out of bounds if spatial_level exceeds schedule length
+        level_index = min(self.spatial_level, len(self.episode_length_schedule) - 1)
+        return self.episode_length_schedule[level_index]
+
+    def update_inspection_level(self, episode_success):
+        self.success_buffer.append(1 if episode_success else 0)
+
+        if len(self.success_buffer) < self.min_episodes_for_curriculum:
+            return 
+
+        self.success_rate = sum(self.success_buffer) / len(self.success_buffer)
+
+        if self.spatial_level >= len(self.start_pos) - 4:
+            current_milestone = self.final_spatial_milestone
+        else:
+            current_milestone = self.default_spatial_milestone
+
+        #check if we need to advance spatial level
+        if self.inspection_curriculum_level>=current_milestone and self.spatial_level < len(self.start_pos) - 1:
+            self.spatial_level += 1
+            self.success_buffer.clear()
+            self.inspection_curriculum_level = max(self.init_inspection_threshold, self.inspection_curriculum_level - 0.3)
+            return
+
+        if self.success_rate >= self.curriculum_threshold and self.inspection_curriculum_level < self.max_inspection_threshold:
+            new_threshold = self.inspection_curriculum_level + self.curriculum_difficulty_increment
+            self.inspection_curriculum_level = min(new_threshold, self.max_inspection_threshold)
+            self.success_buffer.clear()
+    def get_start_pos(self, num_resets: int):
+        pool_size = self.spatial_level + 1
+        random_indices = torch.randint(0, pool_size, (num_resets,), device=self.device)
+        new_pos = self.start_positions_tensor[random_indices].to(self.device)
+        new_quat = self.start_orientations_tensor[random_indices].to(self.device)
+        return new_pos, new_quat
 
 class Isaac3dinspectionEnv(DirectRLEnv):
     cfg: Isaac3dinspectionEnvCfg
@@ -76,7 +175,12 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             local_map_size=self.cfg.LOCAL_MAP_SIZE)
         self.last_map_entropy = 0.0
         self.last_visible_areas = 0.0
-        self.inspection_threshold = self.cfg.init_inspection_threshold
+        self.curriculum = Curriculum(
+            init_inspection_threshold=self.cfg.init_inspection_threshold,
+            max_inspection_threshold=self.cfg.max_inspection_threshold,
+            curriculum_difficulty_increment=self.cfg.curriculum_difficulty_increment,
+            device=self.device
+        )
 
     def close(self):
         """Cleanup for the environment."""
@@ -90,11 +194,8 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.log_cache = {}
         
         self.episode_distance_reward = 0
-        self.success_buffer = deque(maxlen=60)
-        self.curriculum_threshold = 0.8  # steps
-        self.min_episodes_for_curriculum = 50
+     
         self.success_rate = 0.0
-
         #logging
         self.episode_exploration_reward = 0.0
         self.episode_visibility_reward = 0.0
@@ -154,14 +255,14 @@ class Isaac3dinspectionEnv(DirectRLEnv):
     def _apply_action(self) -> None:
         
         if isinstance(self.single_action_space, gym.spaces.Box):
-            self.log_cache["policy_max"] = max(self.log_cache["policy_max"], self.actions.max().item())
-            self.log_cache["policy_min"] = min(self.log_cache["policy_min"], self.actions.min().item())
+            # self.log_cache["policy_max"] = max(self.log_cache["policy_max"], self.actions.max().item())
+            # self.log_cache["policy_min"] = min(self.log_cache["policy_min"], self.actions.min().item())
 
             linear_velocity = self.actions[:, 0] * self.cfg.max_linear_velocity  # Forward/Backward command
             angular_velocity = self.actions[:, 1] * self.cfg.max_angular_velocity  # Left/Right turn command
 
-            self.log_cache["linear_vel_max"] = max(self.log_cache["linear_vel_max"], torch.abs(linear_velocity).max().item())
-            self.log_cache["angular_vel_max"] = max(self.log_cache["angular_vel_max"], torch.abs(angular_velocity).max().item())
+            # self.log_cache["linear_vel_max"] = max(self.log_cache["linear_vel_max"], torch.abs(linear_velocity).max().item())
+            # self.log_cache["angular_vel_max"] = max(self.log_cache["angular_vel_max"], torch.abs(angular_velocity).max().item())
 
             left_wheel_velocity = (linear_velocity - (angular_velocity * self.cfg.wheel_seperation / 2)) / self.cfg.wheel_radius
             right_wheel_velocity = (linear_velocity + (angular_velocity * self.cfg.wheel_seperation / 2)) / self.cfg.wheel_radius
@@ -169,16 +270,18 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             # Clamp wheel velocities to avoid exceeding max limits
             left_wheel_velocity = torch.clamp(left_wheel_velocity, -self.cfg.max_wheel_velocity, self.cfg.max_wheel_velocity)
             right_wheel_velocity = torch.clamp(right_wheel_velocity, -self.cfg.max_wheel_velocity, self.cfg.max_wheel_velocity)
+
             # if debug:
             #     print(f"Linear Velocity: {linear_velocity}, Angular Velocity: {angular_velocity}\n")
             #     print(f"Left Wheel Velocities: {left_wheel_velocity}, Right Wheel Velocities: {right_wheel_velocity}\n")
 
             self.wheel_commands = torch.stack([left_wheel_velocity, right_wheel_velocity,
                                         left_wheel_velocity, right_wheel_velocity], dim=1)
-            self.log_cache["wheel_max"] = max(self.log_cache["wheel_max"], self.wheel_commands.max().item())
-            self.log_cache["wheel_min"] = min(self.log_cache["wheel_min"], self.wheel_commands.min().item())
+            # self.log_cache["wheel_max"] = max(self.log_cache["wheel_max"], self.wheel_commands.max().item())
+            # self.log_cache["wheel_min"] = min(self.log_cache["wheel_min"], self.wheel_commands.min().item())
             # Scale the wheel commands
             target = self.wheel_commands * self.cfg.action_scale
+            # x = target
 
         elif isinstance(self.single_action_space, gym.spaces.Discrete):
             left_wheel_velocity = torch.zeros_like(self.actions, dtype=torch.float32, device=self.device)
@@ -292,9 +395,9 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             front_mean = torch.mean(front_camera_data, dim=(1, 2), keepdim=True)
             front_camera_data -= front_mean
         # Depth information is enough from front camera
-        elif "distance_to_image_plane" in self.cfg.observation_camera.data_types:
-            front_camera_data = self._obs_camera.data.output["distance_to_image_plane"]
-            front_camera_data[front_camera_data == float("inf")] = 0
+        # elif "distance_to_image_plane" in self.cfg.observation_camera.data_types:
+        #     front_camera_data = self._obs_camera.data.output["distance_to_image_plane"]
+        #     front_camera_data[front_camera_data == float("inf")] = 0
 
         if   "rgb" in self.cfg.inspection_camera.data_types:
             side_camera_data = self._inspection_camera.data.output["rgb"] / 255.0
@@ -368,28 +471,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         # Redraw the canvas to show the updates
         self.fig_face.canvas.draw()
         self.fig_face.canvas.flush_events()
-    # def _visualise_faces(self, face_ids_to_show):
-    #     """Visualize the discovered faces in the scene."""
-    #     if face_ids_to_show is None:
-    #         return
-    #     face_ids = face_ids_to_show.cpu().numpy().squeeze()
-    #     valid_mask = face_ids != -1
-
-
-    #     face_vis = np.zeros((*face_ids.shape, 3), dtype=np.uint8)
-    #     face_vis[valid_mask] = [0, 255, 0]  # Green for detected faces
-
-    #     face_vis_large = cv2.resize(face_vis, (640, 480), interpolation=cv2.INTER_NEAREST)
-    #     cv2.putText(face_vis_large, f"Face IDs (Green=Hit)", (10, 30),
-    #     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-            
-    #         # Count valid detections
-    #     valid_count = np.sum(valid_mask)
-    #     cv2.putText(face_vis_large, f"Valid pixels: {valid_count}", (10, 60), 
-    #             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                
-    #     cv2.imshow("Face ID Detection", face_vis_large)
-    #     cv2.waitKey(1)  # Update the display
 
     def _compute_face_discovery_reward(self):
         """
@@ -441,28 +522,6 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         num_faces_inspected = len(self.discovered_faces_buffer)
         return face_rewards, num_faces_inspected
 
-    def _get_distance_reward(self, func_ = 'exp'):
-        """NEW: Calculate distance-based reward to uninspected objects."""
-        robot_pos = self.robot_pos[:, :2]  # x, y position
-        distance = torch.norm(robot_pos - self.objective_position[:2])
-        print(f"[INFO] Robot Position: {robot_pos}, Objective Position: {self.objective_position[:2]}, Distance: {distance.item():.3f}")
-        print(f"[INFO] Distance to objective: {distance.item():.3f}")
-        reward_mask = distance < self.cfg.max_reward_distance
-
-        if func_ == 'inverse':
-            # org_distance = distance.clone()
-            #consider only giving a reward when within a certain distance
-            if distance.item() > 1.0:
-                distance = 1/(0.0001 + distance)  # Inverse distance for reward
-                distance_reward = self.cfg.distance_reward_scale * distance.item()
-                return distance_reward
-        elif func_ == 'exp':
-            # activation_radius = 2.0
-            distance_reward = torch.exp(-self.cfg.distance_reward_scale_beta * distance )
-            # final_reward = torch.where(distance > activation_radius, distance_reward, 0.0)
-            cliped_reward = reward_mask.float() * distance_reward
-            print(f"[INFO] Distance Reward: {cliped_reward.item():.3f}")
-
     def compute_exploration_reward(self):
         current_map_entropy  = self.map2d.calculate_entropy()
         information_gain = self.last_map_entropy - current_map_entropy
@@ -493,7 +552,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.episode_visibility_reward += visibility_reward
 
         coverage_ratio = num_faces_inspected / self.cfg.max_faces_to_inspect
-        success_bonus = self.cfg.coverage_reward if coverage_ratio >= self.inspection_threshold else 0.0
+        success_bonus = self.cfg.coverage_reward if coverage_ratio >= self.curriculum.get_inspection_level() else 0.0
 
         total_reward = (self.cfg.mesh_coverage_reward_scale * face_discovery_reward
                         + self.cfg.ent_IG_reward_scale * exploration_reward
@@ -507,12 +566,14 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         self.robot_pos = self.robot.data.root_pos_w
         
         # Check for timeout
-        time_out = self.episode_length_buf >= self.cfg.min_episode_length - 1
+        max_length = self.curriculum.get_current_episode_length()
+        time_out = self.episode_length_buf >= max_length - 1
+        # time_out = self.episode_length_buf >= self.cfg.min_episode_length - 1
         
 
         num_faces_inspected = len(self.discovered_faces_buffer)
 
-        coverage_condition = (num_faces_inspected / self.cfg.max_faces_to_inspect) >= self.inspection_threshold
+        coverage_condition = (num_faces_inspected / self.cfg.max_faces_to_inspect) >= self.curriculum.get_inspection_level()
         return coverage_condition, time_out
     
     def _reset_buffers(self):
@@ -526,26 +587,19 @@ class Isaac3dinspectionEnv(DirectRLEnv):
     def _reset_idx(self, env_ids: Sequence[int] | None):
         num_faces_inspected =  len(self.discovered_faces_buffer)
         coverage_ratio = num_faces_inspected / self.cfg.max_faces_to_inspect
-        episode_success = coverage_ratio >= self.inspection_threshold
-        self.success_buffer.append(1 if episode_success else 0)
-
-        if len(self.success_buffer) >= self.min_episodes_for_curriculum:
-            self.success_rate = sum(self.success_buffer) / len(self.success_buffer)
-
-            if self.success_rate >= self.curriculum_threshold and self.inspection_threshold < self.cfg.max_inspection_threshold:
-                new_threshold = self.inspection_threshold + self.cfg.curriculum_difficulty_increment
-                self.inspection_threshold = min(new_threshold, self.cfg.max_inspection_threshold)
-                self.success_buffer.clear()
+        episode_success = coverage_ratio >= self.curriculum.get_inspection_level()
+        self.curriculum.update_inspection_level(episode_success)
 
         if env_ids is None:
             env_ids = self.robot._ALL_INDICES
         if use_wandb:
             if hasattr(self, 'log_cache'):
                 wandb.log({
-                    "episode_summary/inspection_threshold": self.inspection_threshold,
+                    "episode_summary/Inspection_Curriculum_Level": self.curriculum.get_inspection_level(),
+                     "episode_summary/Spatial_Curriculum_Level": self.curriculum.spatial_level,
                     "episode_summary/faces_discovered": num_faces_inspected,
-                    "episode_summary/coverage_ratio": coverage_ratio * 100,
-                    "episode_summary/success_rate": self.success_rate,
+                    "episode_summary/coverage": coverage_ratio * 100,
+                    "episode_summary/success_rate": self.curriculum.success_rate,
                     "episode_summary/episode_length": self.episode_length_buf[env_ids[0]].item(),
                     "episode_summary/last_entropy": self.last_map_entropy,
                     
@@ -581,7 +635,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
         
         # Set FIXED robot position instead of random sampling
-        new_pos = torch.zeros((num_resets, 3), device=self.device)
+        # new_pos = torch.zeros((num_resets, 3), device=self.device)
 
         #Brick Env
 
@@ -609,22 +663,24 @@ class Isaac3dinspectionEnv(DirectRLEnv):
         # new_pos[:, 1] = 27.6  # Fixed Y position
         # new_pos[:, 2] = 0.01  # Fixed Z position 
 
-        new_pos[:, 0] = -22.0  # Fixed X position
-        new_pos[:, 1] = 20.0  # Fixed Y position
-        new_pos[:, 2] = 0.01  # Fixed Z position 
+        #between the columns
+        # new_pos[:, 0] = -22.0  # Fixed X position
+        # new_pos[:, 1] = 20.0  # Fixed Y position
+        # new_pos[:, 2] = 0.01  # Fixed Z position 
         
         # Set FIXED robot velocity (usually zero for consistent start)
         new_vel = torch.zeros((num_resets, 3), device=self.device)
 
         # # Set default orientation (no rotation)
-        new_quat = torch.zeros((num_resets, 4), device=self.device)
-        # [W, X, Y, Z] format for quaternion
-        # For a 45-degree rotation around the Z-axis, we can use:
-        new_quat[:, 0] = 0.7071 # w 0.7071
-        new_quat[:, 1] = 0.0  # x
-        new_quat[:, 2] = 0.0  # y
-        new_quat[:, 3] = -0.7071 # z 0.7071
-
+        # new_quat = torch.zeros((num_resets, 4), device=self.device)
+        # # [W, X, Y, Z] format for quaternion
+        # # For a 45-degree rotation around the Z-axis, we can use:
+        # new_quat[:, 0] = 0.7071 # w 0.7071
+        # new_quat[:, 1] = 0.0  # x
+        # new_quat[:, 2] = 0.0  # y
+        # new_quat[:, 3] = 0.7071 # z 0.7071
+        new_pos, new_quat = self.curriculum.get_start_pos(num_resets)
+      
         # Combine into root state
         new_root_state = torch.cat([new_pos, new_quat, new_vel, torch.zeros((num_resets, 3), device=self.device)], dim=-1)
         
