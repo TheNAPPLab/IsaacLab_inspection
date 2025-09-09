@@ -129,7 +129,7 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
 
 
         self.gru_input_size = camera_cnn_output_dim + self.robot_pose_dim + map_cnn_output_dim
-        self.gru_hidden_size = self._hidden_size_gru #H output size of GRU
+        self.gru_hidden_size = 512 #H output size of GRU
         self.gru_num_layers = 1
         # print(f"DEBUG: gru_input_size: {self.gru_input_size}")
 
@@ -138,16 +138,31 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
                           num_layers=self.gru_num_layers,
                           batch_first=True)  # batch_first -> (batch, sequence, features)
         #output heads
+        # self.policy_head = nn.Sequential(
+        #     nn.Linear(self.gru_hidden_size, self.gru_hidden_size),
+        #     nn.ELU(),
+        #     nn.Linear(self.gru_hidden_size, self.num_actions)
+        # )
+
         self.policy_head = nn.Sequential(
-            nn.Linear(self.gru_hidden_size, self.gru_hidden_size),
+            nn.Linear(self.gru_hidden_size, 512),
             nn.ELU(),
-            nn.Linear(self.gru_hidden_size, self.num_actions)
+            nn.Linear(512, 256),
+            nn.ELU(),
+            nn.Linear(256, self.num_actions)
         )
 
+        # self.value_head = nn.Sequential(
+        #     nn.Linear(self.gru_hidden_size, self.gru_hidden_size),
+        #     nn.ELU(),
+        #     nn.Linear(self.gru_hidden_size, 1)
+        # )
         self.value_head = nn.Sequential(
-            nn.Linear(self.gru_hidden_size, self.gru_hidden_size),
+            nn.Linear(self.gru_hidden_size, 512),
             nn.ELU(),
-            nn.Linear(self.gru_hidden_size, 1)
+            nn.Linear(512, 256),
+            nn.ELU(),
+            nn.Linear(256, 1)
         )
         # Action Head, MU and STD
         self.log_std_parameter = nn.Parameter(torch.zeros(self.num_actions))
@@ -280,8 +295,8 @@ env = gym.make(args_cli.task, cfg=env_cfg)
 env = wrap_env(env)
 
 device = env.device
-sequence_length = 256
-rollout_length = sequence_length * 8
+sequence_length = 32
+rollout_length = sequence_length * 32
 
 memory = RandomMemory(memory_size=rollout_length, num_envs=1, device=device)
 
@@ -292,19 +307,18 @@ models['value'] = models["policy"]  # Shared(env.observation_space, env.action_s
 cfg = PPO_DEFAULT_CONFIG.copy()
 cfg["rollouts"] = rollout_length  # memory_size
 cfg["learning_epochs"] = 8
-cfg["mini_batches"] = 4  #
+cfg["mini_batches"] = 32  #
 cfg["discount_factor"] = 0.99
 cfg["lambda"] = 0.95
-cfg["learning_rate"] = 1e-3 #
+cfg["learning_rate"] = 0.0003# 0.0003     0.0006
 cfg["learning_rate_scheduler"] = KLAdaptiveRL
-cfg["learning_rate_scheduler_kwargs"] = {"kl_threshold": 0.008}
+cfg["learning_rate_scheduler_kwargs"] = {"kl_threshold": 0.008} # 0.008
 cfg["random_timesteps"] = 0
 cfg["learning_starts"] = 0
 cfg["grad_norm_clip"] = 1.0
 cfg["ratio_clip"] = 0.2
-cfg["value_clip"] = 0.2
 cfg["clip_predicted_values"] = True
-cfg["entropy_loss_scale"] = 0.01
+cfg["entropy_loss_scale"] = 0.02
 cfg["value_loss_scale"] = 1.0
 cfg["kl_threshold"] = 0.0
 # cfg["rewards_shaper"] = lambda rewards, *args, **kwargs: rewards * 1.0
@@ -332,7 +346,7 @@ os.makedirs(os.path.join(log_dir, "checkpoints"), exist_ok=True)
 
 
 
-cfg["experiment"]["write_interval"] = 2000
+cfg["experiment"]["write_interval"] = 1200
 # cfg["experiment"]["name"] = "IsaacLab-scripts_reinforcement_learning_skrl"
 cfg["experiment"]["checkpoint_interval"] = 10_000
 cfg["experiment"]["directory"] = log_root_path
@@ -368,7 +382,7 @@ if is_eval:
     # agent.load(path)
     trainer.eval()
 else:
-    # path = "logs/skrl/3DInspection_direct/2025-08-03_20-01-28_ppo_gru_128/checkpoints/agent_1862000.pt"
+    # path = "/home/tosin/IsaacLab_inspection/scripts/reinforcement_learning/skrl/logs/skrl/3DInspection_direct/2025-09-07_11-42-53_ppo_gru_128/checkpoints/agent_450000.pt"
     # agent.load(path)
     trainer.train()
 

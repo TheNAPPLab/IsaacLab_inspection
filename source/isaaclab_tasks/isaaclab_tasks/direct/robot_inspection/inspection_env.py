@@ -47,7 +47,7 @@ except ModuleNotFoundError:
 import omni.usd
 from pxr import UsdGeom, Gf
 #View logs
-
+DEG_0 = [0.0, 0.0, 0.0, 0.0]
 DEG_90 = [0.7071068, 0.0, 0.0, 0.7071068]
 DEG_NEG_90 = [0.7071068, 0.0, 0.0, -0.7071068]
 debug = False
@@ -60,6 +60,7 @@ class Curriculum:
                  curriculum_difficulty_increment = 0.05,
                  default_spatial_milestone: float = 0.8,
                  final_spatial_milestone: float = 0.9,
+                 init_spatial_level = 0,
                 device: str = None):
         self.current_level = 0
         self.init_inspection_threshold = init_inspection_threshold
@@ -71,8 +72,8 @@ class Curriculum:
      #  new_pos = torch.zeros((num_resets, 3), device=self.device)
 
         self.init_z = 0.01
-        self.start_pos = [[0.0, 5.0, self.init_z, DEG_90],
-                     [4.0, 5.5, self.init_z, DEG_NEG_90],
+        self.start_pos = [[-1.0, 5.0, self.init_z, DEG_90],
+                     [4.7, 7.4, self.init_z, DEG_NEG_90],
                     [0, 0, self.init_z, DEG_90],
                     [2.2, 9.4, self.init_z, DEG_0],
                     [2.2, 12.7, self.init_z, DEG_NEG_90],
@@ -84,14 +85,16 @@ class Curriculum:
                     [-22, 7.78, self.init_z, DEG_NEG_90],
                     [-24.2, 11.41, self.init_z, DEG_NEG_90]]
         self.episode_length_schedule = [
-            2000, 2000,  # Levels 0, 1
-            2000, 2000, # Levels 2, 3
-            2000, 2200, # Levels 4, 5
-            2200, 2200, # Levels 6, 7
-            2200, 2400, # Levels 8, 9
-            2400, 2400  # Levels 10, 11 (full length)
+            1200, 1200,  # Levels 0, 1
+            2200, 2200, # Levels 2, 3
+            2500, 2500, # Levels 4, 5
+            2500, 2500, # Levels 6, 7
+            2500, 2500, # Levels 8, 9
+            2500, 2500  # Levels 10, 11 (full length)
         ]
-        
+        self.spatial_level = init_spatial_level
+        #2025-09-07_11-42-53_ppo_gru_128
+
         positions = torch.tensor([[item[0], item[1], item[2]] for item in self.start_pos], device=device)
         orientations = torch.tensor([item[3] for item in self.start_pos], device=device)
         self.start_positions_tensor = positions
@@ -105,11 +108,10 @@ class Curriculum:
         # Task difficulty
         # Spatial curriculum
         self.inspection_curriculum_level = self.init_inspection_threshold
-        self.success_buffer = deque(maxlen= 100)
+        self.success_buffer = deque(maxlen= 50)
         self.curriculum_threshold = 0.75  # steps
-        self.min_episodes_for_curriculum = 90
+        self.min_episodes_for_curriculum = 45
         self.success_rate = 0.0
-        self.spatial_level = 1
 
     def get_inspection_level(self):
         return self.inspection_curriculum_level
@@ -179,6 +181,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             init_inspection_threshold=self.cfg.init_inspection_threshold,
             max_inspection_threshold=self.cfg.max_inspection_threshold,
             curriculum_difficulty_increment=self.cfg.curriculum_difficulty_increment,
+            init_spatial_level=self.cfg.init_spatial_level,
             device=self.device
         )
 
@@ -188,7 +191,7 @@ class Isaac3dinspectionEnv(DirectRLEnv):
 
     def _setup_tensor_buffers(self):                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    
         """Pre-allocate all tensors to avoid memory allocation during runtime."""
-     
+
         self.discovered_faces_buffer = set()
 
         self.log_cache = {}
@@ -261,11 +264,14 @@ class Isaac3dinspectionEnv(DirectRLEnv):
             linear_velocity = self.actions[:, 0] * self.cfg.max_linear_velocity  # Forward/Backward command
             angular_velocity = self.actions[:, 1] * self.cfg.max_angular_velocity  # Left/Right turn command
 
+            # Clamp mac acceleration
             # self.log_cache["linear_vel_max"] = max(self.log_cache["linear_vel_max"], torch.abs(linear_velocity).max().item())
             # self.log_cache["angular_vel_max"] = max(self.log_cache["angular_vel_max"], torch.abs(angular_velocity).max().item())
 
             left_wheel_velocity = (linear_velocity - (angular_velocity * self.cfg.wheel_seperation / 2)) / self.cfg.wheel_radius
             right_wheel_velocity = (linear_velocity + (angular_velocity * self.cfg.wheel_seperation / 2)) / self.cfg.wheel_radius
+
+
 
             # Clamp wheel velocities to avoid exceeding max limits
             left_wheel_velocity = torch.clamp(left_wheel_velocity, -self.cfg.max_wheel_velocity, self.cfg.max_wheel_velocity)

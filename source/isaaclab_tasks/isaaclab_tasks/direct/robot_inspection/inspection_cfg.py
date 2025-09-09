@@ -53,7 +53,7 @@ Env_params = {
 
     },
     'complex_forklift':{
-        "num_faces": 24_000,
+        "num_faces": 21_000,
         "semantics_type": "class",
         "semantics_name": "forklift",
         "file_name": "/home/tosin/IsaacLab_inspection/environments/small_forklift.usd",
@@ -226,9 +226,9 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
 
     #reward
 
-    mesh_coverage_reward_scale = 2e-3 # Scale for inspection coverage reward
-    ent_IG_reward_scale = 7.5e-4  # Scale for information gain reward via entropy reduction
-    visibility_IG_reward_scale = 1.5e-3  # Scale for visibility information gain reward
+    mesh_coverage_reward_scale = 2.5e-3 # Scale for inspection coverage reward
+    ent_IG_reward_scale = 7e-4  # Scale for information gain reward via entropy reduction
+    visibility_IG_reward_scale = 1e-3  # Scale for visibility information gain reward
     distance_reward_scale = 1.0  # Scale for distance-based rewards
     distance_reward_scale_beta = 2.0  # Beta parameter for distance-based rewards
     max_reward_distance = 3.0 #max distance for reward
@@ -237,20 +237,25 @@ class Isaac3dinspectionEnvCfg(DirectRLEnvCfg):
     movement_reward_scale = 0.05
 
     #inspectiopn curriculum
-    init_inspection_threshold = 0.5 # Coverage % threshold to count as valid inspection
-    max_inspection_threshold = 0.98
+    #First face 5094
+    #secound face 10703
+    #third face 14189
+    #last face 18867
+    init_inspection_threshold = 0.3 # Coverage % threshold to count as valid inspection
+    init_spatial_level = 1
+    max_inspection_threshold = 0.95
     curriculum_difficulty_increment = 0.05
-    coverage_reward = 7.0
+    coverage_reward = 10.0
     # inspection_save_dir = "inspection_captures"
 
     terminate_on_all_inspected = True
-    min_episode_length = 2000
+    min_episode_length = 2500
     max_faces_to_inspect = env_parameters["num_faces"]
 
-    max_linear_velocity = 1.0
-    max_angular_velocity = 1.0
+    max_linear_velocity = 2.0
+    max_angular_velocity = 4.0
     min_discovery_interval = 1.0
-    max_wheel_velocity = 10.0  # Max wheel velocity for the robot
+    max_wheel_velocity = 20.41  # Max wheel velocity for the robot
 
 
 # class Isaac3dLidarinspectionEnvCfg(Isaac3dinspectionEnvCfg):
